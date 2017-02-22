@@ -128,9 +128,30 @@ func (i *gatewayHandler) optionsHandler(w http.ResponseWriter, r *http.Request) 
 	i.addUserHeaders(w) // return all custom headers (including CORS ones, if set)
 }
 
+func (i *gatewayHandler) resolve(ctx context.Context, p string) (string, error) {
+	pp, err := path.ParsePath(p)
+	if err != nil {
+		return "", err
+	}
+
+	dagnode, err := core.Resolve(ctx, i.node.Namesys, i.node.Resolver, pp)
+	if err == core.ErrNoNamesys {
+		return "", coreiface.ErrOffline
+	} else if err != nil {
+		return "", err
+	}
+	return dagnode.String(), nil
+}
+
 func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 
 	urlPath := r.URL.Path
+	
+	etag, err := i.resolve(ctx, urlPath)
+	if err == nil && r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 
 	// If the gateway is behind a reverse proxy and mounted at a sub-path,
 	// the prefix header can be set to signal this sub-path.
@@ -185,12 +206,6 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		return
 	}
 
-	etag := gopath.Base(urlPath)
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-
 	i.addUserHeaders(w) // ok, _now_ write user's headers.
 	w.Header().Set("X-IPFS-Path", urlPath)
 
@@ -204,8 +219,8 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	// and only if it's /ipfs!
 	// TODO: break this out when we split /ipfs /ipns routes.
 	modtime := time.Now()
+	w.Header().Set("Etag", etag)
 	if strings.HasPrefix(urlPath, ipfsPathPrefix) {
-		w.Header().Set("Etag", etag)
 		w.Header().Set("Cache-Control", "public, max-age=29030400, immutable")
 
 		// set modtime to a really long time ago, since files are immutable and should stay cached
@@ -235,7 +250,8 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 
 			if urlPath[len(urlPath)-1] != '/' {
 				// See comment above where originalUrlPath is declared.
-				http.Redirect(w, r, originalUrlPath+"/", 302)
+				r.URL.Path = originalUrlPath + "/"
+				http.Redirect(w, r, r.URL.String(), 302)
 				log.Debugf("redirect to %s", originalUrlPath+"/")
 				return
 			}
