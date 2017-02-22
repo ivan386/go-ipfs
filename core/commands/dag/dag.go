@@ -3,14 +3,15 @@ package dagcmd
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"strings"
 
 	cmds "github.com/ipfs/go-ipfs/commands"
 	path "github.com/ipfs/go-ipfs/path"
 
-	node "gx/ipfs/QmRSU5EqqWVZSNdbU51yXmVoF1uNw3JgTNB6RaiL7DZM16/go-ipld-node"
-	cid "gx/ipfs/QmcTcsTvfaeEBRFo1TkFgT8sRmgi1n1LTZpecfVP8fzpGD/go-cid"
-	ipldcbor "gx/ipfs/QmfMxth6d2po8YGrtSVyNb2u6SFNrPdAsWQoZG83oXRBqX/go-ipld-cbor"
+	cid "gx/ipfs/QmV5gPoRsjN1Gid3LMdNZTyfCtP2DsvqEbMAmz82RmmiGk/go-cid"
+	node "gx/ipfs/QmYDscK7dmdo2GZ9aumS8s5auUUAH5mR1jvj5pYhWusfK7/go-ipld-node"
+	ipldcbor "gx/ipfs/QmdaC21UyoyN3t9QdapHZfsaUo3mqVf5p4CEuFaYVFqwap/go-ipld-cbor"
 )
 
 var DagCmd = &cmds.Command{
@@ -80,6 +81,21 @@ into an object of the specified format.
 
 			res.SetOutput(&OutputObject{Cid: c})
 			return
+		case "raw":
+			nd, err := convertRawToType(fi, format)
+			if err != nil {
+				res.SetError(err, cmds.ErrNormal)
+				return
+			}
+
+			c, err := n.DAG.Add(nd)
+			if err != nil {
+				res.SetError(err, cmds.ErrNormal)
+				return
+			}
+
+			res.SetOutput(&OutputObject{Cid: c})
+			return
 		default:
 			res.SetError(fmt.Errorf("unrecognized input encoding: %s", ienc), cmds.ErrNormal)
 			return
@@ -121,13 +137,23 @@ var DagGetCmd = &cmds.Command{
 			return
 		}
 
-		obj, err := n.Resolver.ResolvePath(req.Context(), p)
+		obj, rem, err := n.Resolver.ResolveToLastNode(req.Context(), p)
 		if err != nil {
 			res.SetError(err, cmds.ErrNormal)
 			return
 		}
 
-		res.SetOutput(obj)
+		var out interface{} = obj
+		if len(rem) > 0 {
+			final, _, err := obj.Resolve(rem)
+			if err != nil {
+				res.SetError(err, cmds.ErrNormal)
+				return
+			}
+			out = final
+		}
+
+		res.SetOutput(out)
 	},
 }
 
@@ -139,5 +165,19 @@ func convertJsonToType(r io.Reader, format string) (node.Node, error) {
 		return nil, fmt.Errorf("protobuf handling in 'dag' command not yet implemented")
 	default:
 		return nil, fmt.Errorf("unknown target format: %s", format)
+	}
+}
+
+func convertRawToType(r io.Reader, format string) (node.Node, error) {
+	switch format {
+	case "cbor", "dag-cbor":
+		data, err := ioutil.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+
+		return ipldcbor.Decode(data)
+	default:
+		return nil, fmt.Errorf("unsupported target format for raw input: %s", format)
 	}
 }
