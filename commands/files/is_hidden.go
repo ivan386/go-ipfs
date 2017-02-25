@@ -8,8 +8,12 @@ import (
 )
 
 func IsHidden(f File) bool {
+	return IsHiddenPath(f.FullPath())
+}
 
-	fName := filepath.Base(f.FileName())
+func IsHiddenPath(fullPath string) bool {
+
+	fName := filepath.Base(fullPath)
 
 	if strings.HasPrefix(fName, ".") && len(fName) > 1 {
 		return true

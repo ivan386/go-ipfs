@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 )
 
@@ -70,7 +69,7 @@ func (f *serialFile) NextFile() (File, error) {
 	stat := f.files[0]
 	f.files = f.files[1:]
 
-	for !f.handleHiddenFiles && strings.HasPrefix(stat.Name(), ".") {
+	for !f.handleHiddenFiles && IsHiddenPath(filepath.Join(f.path, stat.Name())) {
 		if len(f.files) == 0 {
 			return nil, io.EOF
 		}

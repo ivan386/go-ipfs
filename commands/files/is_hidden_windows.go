@@ -10,13 +10,17 @@ import (
 
 func IsHidden(f File) bool {
 
-	fName := filepath.Base(f.FileName())
+	return IsHiddenPath(f.FullPath())
+}
+
+func IsHiddenPath(fullPath string) bool {
+	fName := filepath.Base(fullPath)
 
 	if strings.HasPrefix(fName, ".") && len(fName) > 1 {
 		return true
 	}
 
-	p, e := syscall.UTF16PtrFromString(f.FileName())
+	p, e := syscall.UTF16PtrFromString(fullPath)
 	if e != nil {
 		return false
 	}
