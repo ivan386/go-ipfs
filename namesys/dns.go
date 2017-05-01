@@ -1,6 +1,7 @@
 package namesys
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -8,7 +9,6 @@ import (
 	context "context"
 	isd "gx/ipfs/QmSXueyqQ7q6rq4VkTaUr5JYqb8eHZCGiRez2zGoxmcKeR/go-is-domain"
 
-	path "github.com/ipfs/go-ipfs/path"
 )
 
 type LookupTXTFunc func(name string) (txt []string, err error)

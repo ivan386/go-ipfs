@@ -22,9 +22,9 @@ import (
 	ft "github.com/ipfs/go-ipfs/unixfs"
 
 	humanize "gx/ipfs/QmPSBJL4momYnE7DcUyk2DVhD6rH488ZmHBGLbxNdhU44K/go-humanize"
-	routing "gx/ipfs/QmUc6twRJRE9MNrUGd8eo9WjHHxebGppdZfptGCASkR7fF/go-libp2p-routing"
-	cid "gx/ipfs/QmV5gPoRsjN1Gid3LMdNZTyfCtP2DsvqEbMAmz82RmmiGk/go-cid"
-	node "gx/ipfs/QmYDscK7dmdo2GZ9aumS8s5auUUAH5mR1jvj5pYhWusfK7/go-ipld-node"
+	cid "gx/ipfs/QmYhQaCYEcaPPjxJX7YcPcVKkQfRy6sJ7B3XmGFk82XYdQ/go-cid"
+	routing "gx/ipfs/QmafuecpeZp3k3sHJ5mUARHd4795revuadECQMkmHB8LfW/go-libp2p-routing"
+	node "gx/ipfs/Qmb3Hm9QDFmfYuET4pu7Kyg8JV78jFa1nvZx5vnCZsK4ck/go-ipld-format"
 )
 
 const (
@@ -128,31 +128,10 @@ func (i *gatewayHandler) optionsHandler(w http.ResponseWriter, r *http.Request) 
 	i.addUserHeaders(w) // return all custom headers (including CORS ones, if set)
 }
 
-func (i *gatewayHandler) resolve(ctx context.Context, p string) (string, error) {
-	pp, err := path.ParsePath(p)
-	if err != nil {
-		return "", err
-	}
-
-	dagnode, err := core.Resolve(ctx, i.node.Namesys, i.node.Resolver, pp)
-	if err == core.ErrNoNamesys {
-		return "", coreiface.ErrOffline
-	} else if err != nil {
-		return "", err
-	}
-	return dagnode.String(), nil
-}
-
 func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 
 	urlPath := r.URL.Path
 	
-	etag, err := i.resolve(ctx, urlPath)
-	if err == nil && r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-
 	// If the gateway is behind a reverse proxy and mounted at a sub-path,
 	// the prefix header can be set to signal this sub-path.
 	// It will be prepended to links in directory listings and the index.html redirect.
@@ -185,7 +164,22 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		return
 	}
 
-	dr, err := i.api.Unixfs().Cat(ctx, parsedPath)
+	// Resolve path to the final DAG node for the ETag
+	resolvedPath, err := i.api.ResolvePath(ctx, parsedPath)
+	switch err {
+	case nil:
+	case coreiface.ErrOffline:
+		if !i.node.OnlineMode() {
+			webError(w, "ipfs resolve -r "+urlPath, err, http.StatusServiceUnavailable)
+			return
+		}
+		fallthrough
+	default:
+		webError(w, "ipfs resolve -r "+urlPath, err, http.StatusNotFound)
+		return
+	}
+
+	dr, err := i.api.Unixfs().Cat(ctx, resolvedPath)
 	dir := false
 	switch err {
 	case nil:
@@ -193,19 +187,21 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		defer dr.Close()
 	case coreiface.ErrIsDir:
 		dir = true
-	case coreiface.ErrOffline:
-		if !i.node.OnlineMode() {
-			webError(w, "ipfs cat "+urlPath, err, http.StatusServiceUnavailable)
-			return
-		}
-		fallthrough
 	default:
 		webError(w, "ipfs cat "+urlPath, err, http.StatusNotFound)
 		return
 	}
 
+	// Check etag send back to us
+	etag := "\"" + resolvedPath.Cid().String() + "\""
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	i.addUserHeaders(w) // ok, _now_ write user's headers.
 	w.Header().Set("X-IPFS-Path", urlPath)
+	w.Header().Set("Etag", etag)
 
 	// set 'allowed' headers
 	w.Header().Set("Access-Control-Allow-Headers", "X-Stream-Output, X-Chunked-Output")
@@ -217,8 +213,8 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	// and only if it's /ipfs!
 	// TODO: break this out when we split /ipfs /ipns routes.
 	modtime := time.Now()
-	w.Header().Set("Etag", etag)
-	if strings.HasPrefix(urlPath, ipfsPathPrefix) {
+
+	if strings.HasPrefix(urlPath, ipfsPathPrefix) && !dir {
 		w.Header().Set("Cache-Control", "public, max-age=29030400, immutable")
 
 		// set modtime to a really long time ago, since files are immutable and should stay cached
@@ -231,7 +227,7 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		return
 	}
 
-	links, err := i.api.Unixfs().Ls(ctx, parsedPath)
+	links, err := i.api.Unixfs().Ls(ctx, resolvedPath)
 	if err != nil {
 		internalWebError(w, err)
 		return
