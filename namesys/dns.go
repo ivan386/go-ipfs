@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	context "context"
+	path "github.com/ipfs/go-ipfs/path"
 	isd "gx/ipfs/QmSXueyqQ7q6rq4VkTaUr5JYqb8eHZCGiRez2zGoxmcKeR/go-is-domain"
 
 )
