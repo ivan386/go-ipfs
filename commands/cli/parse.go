@@ -261,9 +261,9 @@ const msgStdinInfo = "ipfs: Reading from %s; send Ctrl-d to stop."
 
 func parseArgs(inputs []string, stdin *os.File, argDefs []cmds.Argument, recursive, hidden bool, root *cmds.Command) ([]string, []files.File, error) {
 	// ignore stdin on Windows
-	if osh.IsWindows() {
-		stdin = nil
-	}
+	//if osh.IsWindows() {
+	//	stdin = nil
+	//}
 
 	// count required argument definitions
 	numRequired := 0

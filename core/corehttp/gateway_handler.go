@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	gopath "path"
 	"runtime/debug"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	dagutils "github.com/ipfs/go-ipfs/merkledag/utils"
 	path "github.com/ipfs/go-ipfs/path"
 	ft "github.com/ipfs/go-ipfs/unixfs"
+	uio "github.com/ipfs/go-ipfs/unixfs/io"
 
 	humanize "gx/ipfs/QmPSBJL4momYnE7DcUyk2DVhD6rH488ZmHBGLbxNdhU44K/go-humanize"
 	cid "gx/ipfs/QmYhQaCYEcaPPjxJX7YcPcVKkQfRy6sJ7B3XmGFk82XYdQ/go-cid"
@@ -227,20 +229,22 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		return
 	}
 
-	links, err := i.api.Unixfs().Ls(ctx, resolvedPath)
+	nd, err := i.api.ResolveNode(ctx, resolvedPath)
 	if err != nil {
 		internalWebError(w, err)
 		return
 	}
 
-	// storage for directory listing
-	var dirListing []directoryItem
-	// loop through files
-	foundIndex := false
-	for _, link := range links {
-		if link.Name == "index.html" {
+	dirr, err := uio.NewDirectoryFromNode(i.node.DAG, nd)
+	if err != nil {
+		internalWebError(w, err)
+		return
+	}
+
+	ixnd, err := dirr.Find(ctx, "index.html")
+	switch {
+	case err == nil:
 			log.Debugf("found index.html link for %s", urlPath)
-			foundIndex = true
 
 			if urlPath[len(urlPath)-1] != '/' {
 				// See comment above where originalUrlPath is declared.
@@ -250,7 +254,7 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 				return
 			}
 
-			dr, err := i.api.Unixfs().Cat(ctx, coreapi.ParseCid(link.Cid))
+		dr, err := i.api.Unixfs().Cat(ctx, coreapi.ParseCid(ixnd.Cid()))
 			if err != nil {
 				internalWebError(w, err)
 				return
@@ -259,16 +263,26 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 
 			// write to request
 			http.ServeContent(w, r, "index.html", modtime, dr)
-			break
+		return
+	default:
+		internalWebError(w, err)
+		return
+	case os.IsNotExist(err):
 		}
 
+	if r.Method == "HEAD" {
+		return
+	}
+
+	// storage for directory listing
+	var dirListing []directoryItem
+	dirr.ForEachLink(ctx, func(link *node.Link) error {
 		// See comment above where originalUrlPath is declared.
 		di := directoryItem{humanize.Bytes(link.Size), link.Name, gopath.Join(originalUrlPath, link.Name)}
 		dirListing = append(dirListing, di)
-	}
+		return nil
+	})
 
-	if !foundIndex {
-		if r.Method != "HEAD" {
 			// construct the correct back link
 			// https://github.com/ipfs/go-ipfs/issues/1365
 			var backLink string = prefix + urlPath
@@ -307,14 +321,12 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 				Path:     originalUrlPath,
 				BackLink: backLink,
 			}
-			err := listingTemplate.Execute(w, tplData)
+	err = listingTemplate.Execute(w, tplData)
 			if err != nil {
 				internalWebError(w, err)
 				return
 			}
 		}
-	}
-}
 
 func (i *gatewayHandler) postHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	p, err := i.api.Unixfs().Add(ctx, r.Body)
