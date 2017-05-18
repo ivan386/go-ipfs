@@ -159,6 +159,11 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		originalUrlPath = prefix + hdr[0]
 		ipnsHostname = true
 	}
+	
+	for name, value := range r.Header {
+		log.Debugf(">%s: %s", name, value)
+	}
+	
 
 	parsedPath, err := coreapi.ParsePath(urlPath)
 	if err != nil {
@@ -193,10 +198,11 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		webError(w, "ipfs cat "+urlPath, err, http.StatusNotFound)
 		return
 	}
-
+	
 	// Check etag send back to us
 	etag := "\"" + resolvedPath.Cid().String() + "\""
 	if r.Header.Get("If-None-Match") == etag {
+		log.Debugf("Status: NotModified")
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -224,6 +230,7 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	}
 
 	if !dir {
+		log.Debugf("Status: Ok")
 		name := gopath.Base(urlPath)
 		http.ServeContent(w, r, name, modtime, dr)
 		return
@@ -250,7 +257,7 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 				// See comment above where originalUrlPath is declared.
 				r.URL.Path = originalUrlPath + "/"
 				http.Redirect(w, r, r.URL.String(), 302)
-				log.Debugf("redirect to %s", originalUrlPath+"/")
+				log.Debugf("Status: redirect to %s", originalUrlPath+"/")
 				return
 			}
 
