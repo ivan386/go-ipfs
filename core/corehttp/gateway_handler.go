@@ -23,10 +23,10 @@ import (
 	ft "github.com/ipfs/go-ipfs/unixfs"
 	uio "github.com/ipfs/go-ipfs/unixfs/io"
 
-	routing "gx/ipfs/QmNdaQ8itUU9jEZUwTsG4gHMaPmRfi6FEe89QjQAFbep3M/go-libp2p-routing"
+	routing "gx/ipfs/QmP1wMAqk6aZYRZirbaAwmrNeqFRgQrwBt3orUtvSa1UYD/go-libp2p-routing"
+	node "gx/ipfs/QmPAKbSsgEX5B6fpmxa61jXYnoWzZr5sNafd3qgPiSH8Uv/go-ipld-format"
 	humanize "gx/ipfs/QmPSBJL4momYnE7DcUyk2DVhD6rH488ZmHBGLbxNdhU44K/go-humanize"
-	cid "gx/ipfs/QmYhQaCYEcaPPjxJX7YcPcVKkQfRy6sJ7B3XmGFk82XYdQ/go-cid"
-	node "gx/ipfs/Qmb3Hm9QDFmfYuET4pu7Kyg8JV78jFa1nvZx5vnCZsK4ck/go-ipld-format"
+	cid "gx/ipfs/Qma4RJSuh7mMeJQYCqMbKzekn6EwBo7HEs5AQYjVRMQATB/go-cid"
 	multibase "gx/ipfs/QmcxkxTVuURV2Ptse8TvkqH5BQDwV62X1x19JqqvbBzwUM/go-multibase"
 )
 
@@ -134,7 +134,8 @@ func (i *gatewayHandler) optionsHandler(w http.ResponseWriter, r *http.Request) 
 func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 
 	urlPath := r.URL.Path
-	
+	escapedURLPath := r.URL.EscapedPath()
+
 	// If the gateway is behind a reverse proxy and mounted at a sub-path,
 	// the prefix header can be set to signal this sub-path.
 	// It will be prepended to links in directory listings and the index.html redirect.
@@ -160,11 +161,10 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		originalUrlPath = prefix + hdr[0]
 		ipnsHostname = true
 	}
-	
+
 	for name, value := range r.Header {
-		log.Debugf(">%s: %s", name, value)
+		log.Debugf("> %s: %s", name, value)
 	}
-	
 
 	parsedPath, err := coreapi.ParsePath(urlPath)
 	if err != nil {
@@ -178,12 +178,12 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	case nil:
 	case coreiface.ErrOffline:
 		if !i.node.OnlineMode() {
-			webError(w, "ipfs resolve -r "+urlPath, err, http.StatusServiceUnavailable)
+			webError(w, "ipfs resolve -r "+escapedURLPath, err, http.StatusServiceUnavailable)
 			return
 		}
 		fallthrough
 	default:
-		webError(w, "ipfs resolve -r "+urlPath, err, http.StatusNotFound)
+		webError(w, "ipfs resolve -r "+escapedURLPath, err, http.StatusNotFound)
 		return
 	}
 
@@ -196,10 +196,10 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	case coreiface.ErrIsDir:
 		dir = true
 	default:
-		webError(w, "ipfs cat "+urlPath, err, http.StatusNotFound)
+		webError(w, "ipfs cat "+escapedURLPath, err, http.StatusNotFound)
 		return
 	}
-	
+
 	// Check etag send back to us
 	etag := "\"" + resolvedPath.Cid().String() + "\""
 	if r.Header.Get("If-None-Match") == etag {
@@ -264,8 +264,11 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	}
 
 	if !dir {
-		log.Debugf("Status: Ok")
 		name := gopath.Base(urlPath)
+		for name, value := range w.Header {
+			log.Debugf("< %s: %s", name, value)
+		}
+		log.Debugf("Status: Ok")
 		http.ServeContent(w, r, name, modtime, dr)
 		return
 	}
@@ -285,33 +288,35 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 	ixnd, err := dirr.Find(ctx, "index.html")
 	switch {
 	case err == nil:
-			log.Debugf("found index.html link for %s", urlPath)
+		log.Debugf("found index.html link for %s", escapedURLPath)
 
 		dirwithoutslash := urlPath[len(urlPath)-1] != '/'
 		goget := r.URL.Query().Get("go-get") == "1"
 		if dirwithoutslash && !goget {
-				// See comment above where originalUrlPath is declared.
-				r.URL.Path = originalUrlPath + "/"
-				http.Redirect(w, r, r.URL.String(), 302)
-				log.Debugf("Status: redirect to %s", originalUrlPath+"/")
-				return
-			}
+			// See comment above where originalUrlPath is declared.
+			r.URL.Path = originalUrlPath + "/"
+			http.Redirect(w, r, r.URL.String(), 302)
+			log.Debugf("Status: redirect to %s", originalUrlPath+"/")
+			return
+		}
 
 		dr, err := i.api.Unixfs().Cat(ctx, coreapi.ParseCid(ixnd.Cid()))
-			if err != nil {
-				internalWebError(w, err)
-				return
-			}
-			defer dr.Close()
-
-			// write to request
-			http.ServeContent(w, r, "index.html", modtime, dr)
+		if err != nil {
+			internalWebError(w, err)
+			return
+		}
+		defer dr.Close()
+		for name, value := range w.Header {
+			log.Debugf("< %s: %s", name, value)
+		}
+		// write to request
+		http.ServeContent(w, r, "index.html", modtime, dr)
 		return
 	default:
 		internalWebError(w, err)
 		return
 	case os.IsNotExist(err):
-		}
+	}
 
 	if r.Method == "HEAD" {
 		return
@@ -326,50 +331,50 @@ func (i *gatewayHandler) getOrHeadHandler(ctx context.Context, w http.ResponseWr
 		return nil
 	})
 
-			// construct the correct back link
-			// https://github.com/ipfs/go-ipfs/issues/1365
-			var backLink string = prefix + urlPath
+	// construct the correct back link
+	// https://github.com/ipfs/go-ipfs/issues/1365
+	var backLink string = prefix + urlPath
 
-			// don't go further up than /ipfs/$hash/
-			pathSplit := path.SplitList(backLink)
-			switch {
-			// keep backlink
-			case len(pathSplit) == 3: // url: /ipfs/$hash
+	// don't go further up than /ipfs/$hash/
+	pathSplit := path.SplitList(backLink)
+	switch {
+	// keep backlink
+	case len(pathSplit) == 3: // url: /ipfs/$hash
 
-			// keep backlink
-			case len(pathSplit) == 4 && pathSplit[3] == "": // url: /ipfs/$hash/
+	// keep backlink
+	case len(pathSplit) == 4 && pathSplit[3] == "": // url: /ipfs/$hash/
 
-			// add the correct link depending on wether the path ends with a slash
-			default:
-				if strings.HasSuffix(backLink, "/") {
-					backLink += "./.."
-				} else {
-					backLink += "/.."
-				}
-			}
-
-			// strip /ipfs/$hash from backlink if IPNSHostnameOption touched the path.
-			if ipnsHostname {
-				backLink = prefix + "/"
-				if len(pathSplit) > 5 {
-					// also strip the trailing segment, because it's a backlink
-					backLinkParts := pathSplit[3 : len(pathSplit)-2]
-					backLink += path.Join(backLinkParts) + "/"
-				}
-			}
-
-			// See comment above where originalUrlPath is declared.
-			tplData := listingTemplateData{
-				Listing:  dirListing,
-				Path:     originalUrlPath,
-				BackLink: backLink,
-			}
-	err = listingTemplate.Execute(w, tplData)
-			if err != nil {
-				internalWebError(w, err)
-				return
-			}
+	// add the correct link depending on wether the path ends with a slash
+	default:
+		if strings.HasSuffix(backLink, "/") {
+			backLink += "./.."
+		} else {
+			backLink += "/.."
 		}
+	}
+
+	// strip /ipfs/$hash from backlink if IPNSHostnameOption touched the path.
+	if ipnsHostname {
+		backLink = prefix + "/"
+		if len(pathSplit) > 5 {
+			// also strip the trailing segment, because it's a backlink
+			backLinkParts := pathSplit[3 : len(pathSplit)-2]
+			backLink += path.Join(backLinkParts) + "/"
+		}
+	}
+
+	// See comment above where originalUrlPath is declared.
+	tplData := listingTemplateData{
+		Listing:  dirListing,
+		Path:     originalUrlPath,
+		BackLink: backLink,
+	}
+	err = listingTemplate.Execute(w, tplData)
+	if err != nil {
+		internalWebError(w, err)
+		return
+	}
+}
 
 func (i *gatewayHandler) postHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	p, err := i.api.Unixfs().Add(ctx, r.Body)

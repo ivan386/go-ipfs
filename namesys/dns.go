@@ -8,7 +8,6 @@ import (
 
 	path "github.com/ipfs/go-ipfs/path"
 	isd "gx/ipfs/QmSXueyqQ7q6rq4VkTaUr5JYqb8eHZCGiRez2zGoxmcKeR/go-is-domain"
-
 )
 
 type LookupTXTFunc func(name string) (txt []string, err error)

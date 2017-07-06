@@ -10,17 +10,16 @@ test_description="test the unix files api"
 
 test_init_ipfs
 
-# setup files for testing
-test_expect_success "can create some files for testing" '
-	FILE1=$(echo foo | ipfs add -q) &&
-	FILE2=$(echo bar | ipfs add -q) &&
-	FILE3=$(echo baz | ipfs add -q) &&
-	mkdir stuff_test &&
+create_files() {
+	FILE1=$(echo foo | ipfs add "$@" -q) &&
+	FILE2=$(echo bar | ipfs add "$@" -q) &&
+	FILE3=$(echo baz | ipfs add "$@" -q) &&
+	mkdir -p stuff_test &&
 	echo cats > stuff_test/a &&
 	echo dogs > stuff_test/b &&
 	echo giraffes > stuff_test/c &&
-	DIR1=$(ipfs add -q stuff_test | tail -n1)
-'
+	DIR1=$(ipfs add -r "$@" -q stuff_test | tail -n1)
+}
 
 verify_path_exists() {
 	# simply running ls on a file should be a good 'check'
@@ -72,6 +71,16 @@ test_sharding() {
 		test_cmp file_out file_exp
 	'
 
+	test_expect_success "can pin a file from sharded directory" '
+		ipfs files stat --hash /foo/file42 > pin_file_hash &&
+		ipfs pin add < pin_file_hash > pin_hash
+	'
+
+	test_expect_success "can unpin a file from sharded directory" '
+		read -r _ HASH _ < pin_hash &&
+		ipfs pin rm $HASH
+	'
+
 	test_expect_success "output object was really sharded" '
 		ipfs files stat --hash /foo > expected_foo_hash &&
 		echo QmPkwLJTYZRGPJ8Lazr9qPdrLmswPtUjaDbEpmR9jEh1se > actual_foo_hash &&
@@ -80,6 +89,8 @@ test_sharding() {
 }
 
 test_files_api() {
+	ROOT_HASH=$1
+
 	test_expect_success "can mkdir in root" '
 		ipfs files mkdir /cats
 	'
@@ -147,6 +158,12 @@ test_files_api() {
 
 	test_expect_success "file shows up in directory" '
 		verify_dir_contents /cats file1
+	'
+
+	test_expect_success "file has correct hash and size in directory" '
+		echo "file1	$FILE1	4" > ls_l_expected &&
+		ipfs files ls -l /cats > ls_l_actual &&
+		test_cmp ls_l_expected ls_l_actual
 	'
 
 	test_expect_success "can read file" '
@@ -392,7 +409,7 @@ test_files_api() {
 	test_expect_success "root hash not bubbled up yet" '
 		test -z "$ONLINE" ||
 		(ipfs refs local > refsout &&
-		test_expect_code 1 grep QmcwKfTMCT7AaeiD92hWjnZn9b6eh9NxnhfSzN5x2vnDpt refsout)
+		test_expect_code 1 grep $ROOT_HASH refsout)
 	'
 
 	test_expect_success "changes bubbled up to root on inspection" '
@@ -400,7 +417,7 @@ test_files_api() {
 	'
 
 	test_expect_success "root hash looks good" '
-		export EXP_ROOT_HASH="QmcwKfTMCT7AaeiD92hWjnZn9b6eh9NxnhfSzN5x2vnDpt" &&
+		export EXP_ROOT_HASH="$ROOT_HASH" &&
 		echo $EXP_ROOT_HASH > root_hash_exp &&
 		test_cmp root_hash_exp root_hash
 	'
@@ -511,26 +528,47 @@ test_files_api() {
 		ipfs files rm -r /foobar &&
 		ipfs files rm -r /adir
 	'
+
+	test_expect_success "root mfs entry is empty" '
+		verify_dir_contents /
+	'
+
+        test_expect_success "repo gc" '
+		ipfs repo gc
+	'
 }
 
 # test offline and online
-test_files_api
-
-test_expect_success "clean up objects from previous test run" '
-	ipfs repo gc
+test_expect_success "can create some files for testing" '
+	create_files
 '
+test_files_api QmcwKfTMCT7AaeiD92hWjnZn9b6eh9NxnhfSzN5x2vnDpt
 
-test_launch_ipfs_daemon
+test_expect_success "can create some files for testing with raw-leaves" '
+	create_files --raw-leaves
+'
+test_files_api QmTpKiKcAj4sbeesN6vrs5w3QeVmd4QmGpxRL81hHut4dZ
+
+test_launch_ipfs_daemon --offline
 
 ONLINE=1 # set online flag so tests can easily tell
-test_files_api
-test_kill_ipfs_daemon
+test_expect_success "can create some files for testing" '
+	create_files
+'
+test_files_api QmcwKfTMCT7AaeiD92hWjnZn9b6eh9NxnhfSzN5x2vnDpt
+
+test_expect_success "can create some files for testing with raw-leaves" '
+	create_files --raw-leaves
+'
+test_files_api QmTpKiKcAj4sbeesN6vrs5w3QeVmd4QmGpxRL81hHut4dZ
+
+test_kill_ipfs_daemon --offline
 
 test_expect_success "enable sharding in config" '
 	ipfs config --json Experimental.ShardingEnabled true
 '
 
-test_launch_ipfs_daemon
+test_launch_ipfs_daemon --offline
 test_sharding
 test_kill_ipfs_daemon
 
