@@ -42,6 +42,7 @@ func BuildDagFromReader(ds ipld.DAGService, spl chunker.Splitter) (ipld.Node, er
 	dbp := h.DagBuilderParams{
 		Dagserv:  ds,
 		Maxlinks: h.DefaultLinksPerBlock,
+		RawLeaves: true,
 	}
 
 	return bal.Layout(dbp.New(spl))

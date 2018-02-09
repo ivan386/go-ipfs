@@ -12,6 +12,7 @@ import (
 	dag "github.com/ipfs/go-ipfs/merkledag"
 	dagutil "github.com/ipfs/go-ipfs/merkledag/utils"
 	path "github.com/ipfs/go-ipfs/path"
+	ufs "github.com/ipfs/go-ipfs/unixfs"
 	uio "github.com/ipfs/go-ipfs/unixfs/io"
 
 	logging "gx/ipfs/QmRb5jh8z2E8hMGN2tkvs1yHynUanqnZ3UeKwgN1i9P1F8/go-log"
@@ -21,8 +22,9 @@ import (
 
 var log = logging.Logger("tarfmt")
 
-var blockSize = 512
+var blockSize = uint64(512)
 var zeroBlock = make([]byte, blockSize)
+var zeroNode = dag.NewRawNode(zeroBlock)
 
 func marshalHeader(h *tar.Header) ([]byte, error) {
 	buf := new(bytes.Buffer)
@@ -40,7 +42,8 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 	tr := tar.NewReader(r)
 
 	root := new(dag.ProtoNode)
-	root.SetData([]byte("ipfs/tar"))
+	root_data_node := new(ufs.FSNode)
+	root_data_node.Type = ufs.TFile
 
 	e := dagutil.NewDagEditor(root, ds)
 
@@ -60,7 +63,9 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 			return nil, err
 		}
 
-		header.SetData(headerBytes)
+		header_data_node := new(ufs.FSNode)
+		header_data_node.Data = headerBytes
+		header_data_node.Type = ufs.TFile
 
 		if h.Size > 0 {
 			spl := chunker.NewRabin(tr, uint64(chunker.DefaultBlockSize))
@@ -69,23 +74,59 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 				return nil, err
 			}
 
-			err = header.AddNodeLinkClean("data", nd)
+			data_size, err := nd.Size()
 			if err != nil {
 				return nil, err
 			}
+			header_data_node.AddBlockSize(data_size)
+
+			err = header.AddNodeLinkClean("", nd)
+			if err != nil {
+				return nil, err
+			}
+
+			pad := (blockSize - (data_size % blockSize)) % blockSize
+
+			if pad > 0 {
+				header_data_node.AddBlockSize(pad)
+
+				err = header.AddNodeLinkClean("", zeroNode)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
+
+		root_data_node.AddBlockSize(header_data_node.FileSize())
+
+		header_data_bytes, err := header_data_node.GetBytes()
+		if err != nil {
+			return nil, err
+		}
+
+		header.SetData(header_data_bytes)
 
 		err = ds.Add(ctx, header)
 		if err != nil {
 			return nil, err
 		}
 
-		path := escapePath(h.Name)
-		err = e.InsertNodeAtPath(context.Background(), path, header, func() *dag.ProtoNode { return new(dag.ProtoNode) })
-		if err != nil {
-			return nil, err
-		}
+		root.AddNodeLinkClean("", header)
 	}
+
+	root_data_node.AddBlockSize(blockSize)
+	root_data_node.AddBlockSize(blockSize)
+
+	root_data_bytes, err := root_data_node.GetBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	root.SetData(root_data_bytes)
+
+	ds.Add(ctx, zeroNode)
+	root.AddNodeLinkClean("", zeroNode)
+	root.AddNodeLinkClean("", zeroNode)
 
 	return e.Finalize(ctx, ds)
 }
@@ -137,8 +178,8 @@ func (tr *tarReader) Read(b []byte) (int, error) {
 	if tr.fileRead != nil {
 		n, err := tr.fileRead.Read(b)
 		if err == io.EOF {
-			nr := tr.fileRead.n
-			tr.pad = (blockSize - (nr % blockSize)) % blockSize
+			nr := uint64(tr.fileRead.n)
+			tr.pad = int((blockSize - (nr % blockSize)) % blockSize)
 			tr.fileRead.Close()
 			tr.fileRead = nil
 			return n, nil
