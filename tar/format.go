@@ -18,6 +18,7 @@ import (
 	logging "gx/ipfs/QmRb5jh8z2E8hMGN2tkvs1yHynUanqnZ3UeKwgN1i9P1F8/go-log"
 	chunker "gx/ipfs/QmWo8jYc19ppG7YoTsrr2kEtLRbARTJho5oNXFTR6B7Peq/go-ipfs-chunker"
 	ipld "gx/ipfs/Qme5bWv7wtjUNGsK2BNGVUFPKiuxWrsqrtvYwCLRw8YFES/go-ipld-format"
+	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
 )
 
 var log = logging.Logger("tarfmt")
@@ -78,6 +79,21 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 			if err != nil {
 				return nil, err
 			}
+			
+			if nd.Cid().Type() == cid.Dag {
+				if pn, ok := nd.(*merkledag.ProtoNode); ok {
+					d, err := unixfs.FromBytes(pn.Data())
+					if err != nil {
+						res.SetError(err, cmdkit.ErrNormal)
+						return
+					}
+
+					t = d.GetType()
+				}
+			}else if nd.Cid().Type() != cid.Raw {
+			
+			}
+			
 			header_data_node.AddBlockSize(data_size)
 
 			err = header.AddNodeLinkClean("", nd)
