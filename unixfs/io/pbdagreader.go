@@ -35,11 +35,19 @@ type PBDagReader struct {
 	// the cid of each child of the current node
 	links []*cid.Cid
 
-	// the index of the child link currently being read from
-	linkPosition int
-
 	// current offset for the read head within the 'file'
 	offset int64
+	
+	// pbdata.Blocksizes
+	sizes []uint64
+
+	// limit bytes to read from buf
+	blockSize uint64
+
+	// current block position in file
+	blockPos uint64
+	
+	blockSparsed bool
 
 	// Our context
 	ctx context.Context
@@ -54,22 +62,44 @@ var _ DagReader = (*PBDagReader)(nil)
 func NewPBFileReader(ctx context.Context, n *mdag.ProtoNode, pb *ftpb.Data, serv ipld.NodeGetter) *PBDagReader {
 	fctx, cancel := context.WithCancel(ctx)
 	curLinks := getLinkCids(n)
+	fileSize := pb.GetFilesize()
+	blockSize := fileSize
+	data := pb.GetData()
+	sizes := pb.Blocksizes
+
+	// If links bigger than blocksizes than slice links
+	if len(curLinks) > len(sizes) {
+		curLinks = curLinks[:len(sizes)]
+	}else if len(sizes) > len(curLinks) {
+		sizes = sizes[:len(curLinks)]
+	}
+	
+	if uint64(len(data)) > fileSize {
+		data = data[:fileSize]
+	}
+	
+	if blockSize > uint64(len(data)) {
+		blockSize = uint64(len(data))
+	}
+
 	return &PBDagReader{
 		node:     n,
 		serv:     serv,
-		buf:      NewBufDagReader(pb.GetData()),
+		buf:      NewBufDagReader(data),
 		promises: make([]*ipld.NodePromise, len(curLinks)),
 		links:    curLinks,
 		ctx:      fctx,
 		cancel:   cancel,
 		pbdata:   pb,
+		sizes:    sizes,
+		blockSize:  blockSize,
 	}
 }
 
 const preloadSize = 10
 
-func (dr *PBDagReader) preloadNextNodes(ctx context.Context) {
-	beg := dr.linkPosition
+func (dr *PBDagReader) preloadNextNodes(ctx context.Context, linkPosition int) {
+	beg := linkPosition
 	end := beg + preloadSize
 	if end >= len(dr.links) {
 		end = len(dr.links)
@@ -82,26 +112,84 @@ func (dr *PBDagReader) preloadNextNodes(ctx context.Context) {
 
 // precalcNextBuf follows the next link in line and loads it from the
 // DAGService, setting the next buffer to read from
-func (dr *PBDagReader) precalcNextBuf(ctx context.Context) error {
+func (dr *PBDagReader) precalcNextBuf(ctx context.Context, offset int64) error {
 	if dr.buf != nil {
 		dr.buf.Close() // Just to make sure
 		dr.buf = nil
 	}
 
-	if dr.linkPosition >= len(dr.promises) {
+	data := dr.pbdata.GetData()
+
+	if offset < 0 {
+		return errors.New("Invalid offset")
+	}
+	
+	if uint64(offset) >= dr.Size() {
+		// Keep that offset to return io.EOF when called from Reader
+		dr.offset = offset
 		return io.EOF
 	}
 
-	if dr.promises[dr.linkPosition] == nil {
-		dr.preloadNextNodes(ctx)
+	if uint64(len(data)) > dr.Size() {
+		data = data[:dr.Size()]
 	}
 
-	nxt, err := dr.promises[dr.linkPosition].Get(ctx)
+	if int64(len(data)) > offset {
+		dr.offset = offset
+		dr.blockPos = 0
+		dr.blockSize = uint64(len(data))
+		return nil
+	}
+
+	dr.blockPos = uint64(len(data))
+
+	// If no more blocks than append file with zeros
+	if len(dr.sizes) == 0 {
+		dr.offset = offset
+		dr.blockSize = dr.Size() - dr.blockPos
+		return nil
+	}
+
+	dr.blockSize = dr.sizes[0]
+	linkPosition := 0
+	for i := 0; i < len(dr.sizes) - 1; i++ {
+		if uint64(offset) < dr.blockPos + dr.blockSize {
+			break
+		}
+		dr.blockPos += dr.sizes[i]
+		dr.blockSize = dr.sizes[i+1]
+		linkPosition = i+1
+	}
+
+	// If we past last block than append file with zeros
+	if uint64(offset) >= dr.blockPos + dr.blockSize {
+		dr.offset = offset
+		dr.blockPos = dr.blockPos + dr.blockSize
+		dr.blockSize = dr.Size() - dr.blockPos
+		return nil
+	}
+
+	// Align block end to file size
+	if dr.blockPos + dr.blockSize > dr.Size() {
+		dr.blockSize = dr.Size() - dr.blockPos
+	}
+
+	// This can not happen but we check that
+	if linkPosition >= len(dr.promises) {
+		return io.EOF
+	}
+
+	if dr.promises[linkPosition] == nil {
+		dr.preloadNextNodes(ctx, linkPosition)
+	}
+
+	nxt, err := dr.promises[linkPosition].Get(ctx)
 	if err != nil {
 		return err
 	}
-	dr.promises[dr.linkPosition] = nil
-	dr.linkPosition++
+	dr.promises[linkPosition] = nil
+
+	dr.offset = offset
 
 	switch nxt := nxt.(type) {
 	case *mdag.ProtoNode:
@@ -117,9 +205,30 @@ func (dr *PBDagReader) precalcNextBuf(ctx context.Context) error {
 			return ft.ErrInvalidDirLocation
 		case ftpb.Data_File:
 			dr.buf = NewPBFileReader(dr.ctx, nxt, pb, dr.serv)
+			blockOffset := offset - int64(dr.blockPos)
+			if blockOffset > 0 {
+				n, err := dr.buf.Seek(blockOffset, io.SeekStart)
+				if err != nil || err != io.EOF {
+					return err
+				}
+				if n != blockOffset {
+					return fmt.Errorf("incorrect offset without err: %s must be %s", n, blockOffset)
+				}
+			}
 			return nil
 		case ftpb.Data_Raw:
-			dr.buf = NewBufDagReader(pb.GetData())
+			data := pb.GetData()
+			blockOffset := uint64(offset) - dr.blockPos
+			if uint64(len(data)) >= blockOffset {
+				data = data[blockOffset:]
+			} else {
+				return nil
+			}
+			tailSize := dr.blockSize - blockOffset
+			if uint64(len(data)) > tailSize {
+				data = data[:tailSize]
+			}
+			dr.buf = NewBufDagReader(data)
 			return nil
 		case ftpb.Data_Metadata:
 			return errors.New("shouldnt have had metadata object inside file")
@@ -157,7 +266,7 @@ func (dr *PBDagReader) Read(b []byte) (int, error) {
 // CtxReadFull reads data from the DAG structured file
 func (dr *PBDagReader) CtxReadFull(ctx context.Context, b []byte) (int, error) {
 	if dr.buf == nil {
-		if err := dr.precalcNextBuf(ctx); err != nil {
+		if err := dr.precalcNextBuf(ctx, dr.offset); err != nil {
 			return 0, err
 		}
 	}
@@ -165,14 +274,26 @@ func (dr *PBDagReader) CtxReadFull(ctx context.Context, b []byte) (int, error) {
 	// If no cached buffer, load one
 	total := 0
 	for {
-		// Attempt to fill bytes from cached buffer
-		n, err := dr.buf.Read(b[total:])
-		total += n
-		dr.offset += int64(n)
-		if err != nil {
-			// EOF is expected
-			if err != io.EOF {
-				return total, err
+		bs := b[total:]
+		if uint64(dr.offset) < dr.blockPos || uint64(dr.offset) > dr.blockPos + dr.blockSize {
+			return total, errors.New("wrong block set")
+		}
+		dataSize := dr.blockSize - (uint64(dr.offset) - dr.blockPos)
+		if uint64(len(bs)) > dataSize {
+			bs = bs[:dataSize]
+		}
+		offset := 0
+		// If block not sparse
+		if dr.buf != nil {
+			n, err := dr.buf.Read(bs)
+			offset = n
+			total += n
+			dr.offset += int64(n)
+			if err != nil {
+				// EOF is expected
+				if err != io.EOF {
+					return total, err
+				}
 			}
 		}
 
@@ -181,8 +302,24 @@ func (dr *PBDagReader) CtxReadFull(ctx context.Context, b []byte) (int, error) {
 			return total, nil
 		}
 
+		// If not enough data in block
+		if uint64(offset) < dataSize {
+			// Fill block with zeros
+			bs = bs[offset:]
+			for index := range bs{
+				bs[index] = 0
+			}
+			total += len(bs)
+			dr.offset += int64(len(bs))
+		}
+
+		// If weve read enough bytes, return
+		if total == len(b) {
+			return total, nil
+		}
+
 		// Otherwise, load up the next block
-		err = dr.precalcNextBuf(ctx)
+		err := dr.precalcNextBuf(ctx, dr.offset)
 		if err != nil {
 			return total, err
 		}
@@ -192,26 +329,59 @@ func (dr *PBDagReader) CtxReadFull(ctx context.Context, b []byte) (int, error) {
 // WriteTo writes to the given writer.
 func (dr *PBDagReader) WriteTo(w io.Writer) (int64, error) {
 	if dr.buf == nil {
-		if err := dr.precalcNextBuf(dr.ctx); err != nil {
+		if err := dr.precalcNextBuf(dr.ctx, dr.offset); err != nil {
 			return 0, err
 		}
 	}
+	zerosBuf := make([]byte, 32768)
 
 	// If no cached buffer, load one
 	total := int64(0)
 	for {
 		// Attempt to write bytes from cached buffer
-		n, err := dr.buf.WriteTo(w)
-		total += n
-		dr.offset += n
-		if err != nil {
-			if err != io.EOF {
-				return total, err
+		if uint64(dr.offset) < dr.blockPos || uint64(dr.offset) > dr.blockPos + dr.blockSize {
+			return total, errors.New("wrong block set")
+		}
+		dataSize := dr.blockSize - (uint64(dr.offset) - dr.blockPos)
+		offset := int64(0)
+		if dr.buf != nil {
+			n, err := io.CopyN(w, dr.buf, int64(dataSize))
+			offset = n
+			total += n
+			dr.offset += n
+			if err != nil {
+				if err != io.EOF {
+					return total, err
+				}
+			}
+		}
+		
+		// If not enough data
+		if uint64(offset) < dataSize {
+			// Append block with zeros
+			dataSize := dataSize - uint64(offset)
+			zerosBufSlice := zerosBuf
+			if dataSize < uint64(len(zerosBufSlice)) {
+				zerosBufSlice = zerosBufSlice[:dataSize]
+			}
+			for n, err := w.Write(zerosBufSlice);; n, err = w.Write(zerosBufSlice) {
+				total += int64(n)
+				dr.offset += int64(n)
+				dataSize -= uint64(n)
+				if err != nil {
+					return total, err
+				}
+				if dataSize == 0 {
+					break
+				}
+				if dataSize < uint64(len(zerosBufSlice)) {
+					zerosBufSlice = zerosBufSlice[:dataSize]
+				}
 			}
 		}
 
 		// Otherwise, load up the next block
-		err = dr.precalcNextBuf(dr.ctx)
+		err := dr.precalcNextBuf(dr.ctx, dr.offset)
 		if err != nil {
 			if err == io.EOF {
 				return total, nil
@@ -245,57 +415,11 @@ func (dr *PBDagReader) Seek(offset int64, whence int) (int64, error) {
 		if offset == dr.offset {
 			return offset, nil
 		}
-
-		// Grab cached protobuf object (solely to make code look cleaner)
-		pb := dr.pbdata
-
-		// left represents the number of bytes remaining to seek to (from beginning)
-		left := offset
-		if int64(len(pb.Data)) >= offset {
-			// Close current buf to close potential child dagreader
-			if dr.buf != nil {
-				dr.buf.Close()
-			}
-			dr.buf = NewBufDagReader(pb.GetData()[offset:])
-
-			// start reading links from the beginning
-			dr.linkPosition = 0
-			dr.offset = offset
-			return offset, nil
+		err := dr.precalcNextBuf(dr.ctx, offset)
+		if err == io.EOF {
+			return dr.offset, nil
 		}
-
-		// skip past root block data
-		left -= int64(len(pb.Data))
-
-		// iterate through links and find where we need to be
-		for i := 0; i < len(pb.Blocksizes); i++ {
-			if pb.Blocksizes[i] > uint64(left) {
-				dr.linkPosition = i
-				break
-			} else {
-				left -= int64(pb.Blocksizes[i])
-			}
-		}
-
-		// start sub-block request
-		err := dr.precalcNextBuf(dr.ctx)
-		if err != nil {
-			return 0, err
-		}
-
-		// set proper offset within child readseeker
-		n, err := dr.buf.Seek(left, io.SeekStart)
-		if err != nil {
-			return -1, err
-		}
-
-		// sanity
-		left -= n
-		if left != 0 {
-			return -1, errors.New("failed to seek properly")
-		}
-		dr.offset = offset
-		return offset, nil
+		return dr.offset, err
 	case io.SeekCurrent:
 		// TODO: be smarter here
 		if offset == 0 {
