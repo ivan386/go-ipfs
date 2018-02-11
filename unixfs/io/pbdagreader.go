@@ -67,6 +67,16 @@ func NewPBFileReader(ctx context.Context, n *mdag.ProtoNode, pb *ftpb.Data, serv
 	data := pb.GetData()
 	sizes := pb.Blocksizes
 
+	sizesSumm := uint64(len(data))
+	// if sum of blockSizes greater than fileSize then cut blockSizes
+	for index, size := range sizes {
+		if sizesSumm >= fileSize {
+			sizes = sizes[:index]
+			break
+		}
+		sizesSumm += size
+	}
+
 	// If links bigger than blocksizes than slice links
 	if len(curLinks) > len(sizes) {
 		curLinks = curLinks[:len(sizes)]
