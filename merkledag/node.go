@@ -22,6 +22,9 @@ type ProtoNode struct {
 	links []*ipld.Link
 	data  []byte
 
+	// disable links sort
+	NoSort bool
+
 	// cache encoded/marshaled value
 	encoded []byte
 

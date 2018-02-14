@@ -10,7 +10,6 @@ import (
 
 	importer "github.com/ipfs/go-ipfs/importer"
 	dag "github.com/ipfs/go-ipfs/merkledag"
-	dagutil "github.com/ipfs/go-ipfs/merkledag/utils"
 	path "github.com/ipfs/go-ipfs/path"
 	ufs "github.com/ipfs/go-ipfs/unixfs"
 	uio "github.com/ipfs/go-ipfs/unixfs/io"
@@ -18,7 +17,6 @@ import (
 	logging "gx/ipfs/QmRb5jh8z2E8hMGN2tkvs1yHynUanqnZ3UeKwgN1i9P1F8/go-log"
 	chunker "gx/ipfs/QmWo8jYc19ppG7YoTsrr2kEtLRbARTJho5oNXFTR6B7Peq/go-ipfs-chunker"
 	ipld "gx/ipfs/Qme5bWv7wtjUNGsK2BNGVUFPKiuxWrsqrtvYwCLRw8YFES/go-ipld-format"
-	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
 )
 
 var log = logging.Logger("tarfmt")
@@ -37,16 +35,22 @@ func marshalHeader(h *tar.Header) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+type protoNodeAndFSNode struct{
+	fs ufs.FSNode
+	proto dag.ProtoNode
+}
+
 // ImportTar imports a tar file into the given DAGService and returns the root
 // node.
 func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.ProtoNode, error) {
 	tr := tar.NewReader(r)
 
+	dir_maps := make(map[int]map[string]*protoNodeAndFSNode)
+
 	root := new(dag.ProtoNode)
 	root_data_node := new(ufs.FSNode)
 	root_data_node.Type = ufs.TFile
-
-	e := dagutil.NewDagEditor(root, ds)
+	root.NoSort = true
 
 	for {
 		h, err := tr.Next()
@@ -57,77 +61,108 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 			return nil, err
 		}
 
-		header := new(dag.ProtoNode)
-
 		headerBytes, err := marshalHeader(h)
 		if err != nil {
 			return nil, err
 		}
 
-		header_data_node := new(ufs.FSNode)
-		header_data_node.Data = headerBytes
-		header_data_node.Type = ufs.TFile
+		header := dag.NewRawNode(headerBytes)
 
-		if h.Size > 0 {
-			spl := chunker.NewRabin(tr, uint64(chunker.DefaultBlockSize))
+		if h.Size == 0{
+			root_data_node.AddBlockSize(512)
+			root.AddNodeLinkClean("", header)
+			ds.Add(ctx, header)
+		}else if h.Size > 0 {
+			spl := chunker.DefaultSplitter(tr)
 			nd, err := importer.BuildDagFromReader(ds, spl)
 			if err != nil {
 				return nil, err
 			}
 
-			data_size, err := nd.Size()
-			if err != nil {
-				return nil, err
-			}
-			
-			if nd.Cid().Type() == cid.Dag {
-				if pn, ok := nd.(*merkledag.ProtoNode); ok {
-					d, err := unixfs.FromBytes(pn.Data())
-					if err != nil {
-						res.SetError(err, cmdkit.ErrNormal)
-						return
-					}
+			pad := (blockSize - (uint64(h.Size) % blockSize)) % blockSize
 
-					t = d.GetType()
+			elems := path.SplitList(strings.Trim(h.Name, "/"))
+			file_name := elems[len(elems)-1]
+			dir := root
+			dir_data := root_data_node
+
+			if len(elems) > 1{
+				dir_path := path.Join(elems[:len(elems)-1])
+				dir_map, ok := dir_maps[len(elems)-1]
+				if !ok {
+					dir_map = make(map[string]*protoNodeAndFSNode)
+					dir_maps[len(elems)-1] = dir_map
 				}
-			}else if nd.Cid().Type() != cid.Raw {
-			
+				dirpfs := dir_map[dir_path]
+				if dirpfs == nil {
+					dirpfs = new(protoNodeAndFSNode)
+					dirpfs.fs.Type = ufs.TFile
+					dirpfs.proto.NoSort = true
+					dir_maps[len(elems)-1][dir_path] = dirpfs
+				}
+				dir_data = &dirpfs.fs
+				dir = &dirpfs.proto
 			}
-			
-			header_data_node.AddBlockSize(data_size)
 
-			err = header.AddNodeLinkClean("", nd)
-			if err != nil {
-				return nil, err
-			}
-
-			pad := (blockSize - (data_size % blockSize)) % blockSize
-
+			dir_data.AddBlockSize(512)
+			dir.AddNodeLinkClean("", header)
+			ds.Add(ctx, header)
+			dir_data.AddBlockSize(uint64(h.Size))
+			dir.AddNodeLinkClean(file_name, nd)
+			ds.Add(ctx, nd)
 			if pad > 0 {
-				header_data_node.AddBlockSize(pad)
-
-				err = header.AddNodeLinkClean("", zeroNode)
-				if err != nil {
-					return nil, err
-				}
+				dir_data.AddBlockSize(pad)
+				pad_node := dag.NewRawNode(zeroBlock[:pad])
+				dir.AddNodeLinkClean("", pad_node)
+				ds.Add(ctx, pad_node)
 			}
 		}
+	}
 
-		root_data_node.AddBlockSize(header_data_node.FileSize())
+	var max = 0
+	for k := range dir_maps{
+		if k > max {
+			max = k
+		}
+	}
 
-		header_data_bytes, err := header_data_node.GetBytes()
+	for i := max; i > 1; i-- {
+		for k, v := range dir_maps[i]{
+			elems := path.SplitList(k)
+			dir_path := path.Join(elems[:len(elems)-1])
+			dir_name := elems[len(elems)-1]
+			dir_map, ok := dir_maps[i-1]
+			if !ok {
+				dir_map = make(map[string]*protoNodeAndFSNode)
+				dir_maps[i-1] = dir_map
+			}
+			dirpfs := dir_map[dir_path]
+			if dirpfs == nil {
+				dirpfs = new(protoNodeAndFSNode)
+				dirpfs.fs.Type = ufs.TFile
+				dirpfs.proto.NoSort = true
+				dir_maps[i-1][dir_path] = dirpfs
+			}
+			data_bytes, err := v.fs.GetBytes()
+			if err != nil {
+				return nil, err
+			}
+			v.proto.SetData(data_bytes)
+			dirpfs.fs.AddBlockSize(v.fs.FileSize())
+			dirpfs.proto.AddNodeLinkClean(dir_name, &v.proto)
+			ds.Add(ctx, &v.proto)
+		}
+	}
+
+	for k, v := range dir_maps[1]{
+		data_bytes, err := v.fs.GetBytes()
 		if err != nil {
 			return nil, err
 		}
-
-		header.SetData(header_data_bytes)
-
-		err = ds.Add(ctx, header)
-		if err != nil {
-			return nil, err
-		}
-
-		root.AddNodeLinkClean("", header)
+		v.proto.SetData(data_bytes)
+		root_data_node.AddBlockSize(v.fs.FileSize())
+		root.AddNodeLinkClean(k, &v.proto)
+		ds.Add(ctx, &v.proto)
 	}
 
 	root_data_node.AddBlockSize(blockSize)
@@ -140,11 +175,12 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 
 	root.SetData(root_data_bytes)
 
+	root.AddNodeLinkClean("", zeroNode)
+	root.AddNodeLinkClean("", zeroNode)
 	ds.Add(ctx, zeroNode)
-	root.AddNodeLinkClean("", zeroNode)
-	root.AddNodeLinkClean("", zeroNode)
+	ds.Add(ctx, root)
 
-	return e.Finalize(ctx, ds)
+	return root, nil
 }
 
 // adds a '-' to the beginning of each path element so we can use 'data' as a
