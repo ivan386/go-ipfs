@@ -527,6 +527,36 @@
       "hash": "QmWo8jYc19ppG7YoTsrr2kEtLRbARTJho5oNXFTR6B7Peq",
       "name": "go-ipfs-chunker",
       "version": "0.0.2"
+    },
+    {
+      "author": "jbenet",
+      "hash": "Qmf7HqcW7LtCi1W8y2bdx2eJpze74jkbKqpByxgXikdbLF",
+      "name": "go-detect-race",
+      "version": "1.0.1"
+    },
+    {
+      "author": "hsanjuan",
+      "hash": "QmRJVNatYJwTAHgdSM1Xef9QVQ1Ch3XHdmcrykjP5Y4soL",
+      "name": "go-ipfs-delay",
+      "version": "0.0.1"
+    },
+    {
+      "author": "hsanjuan",
+      "hash": "QmRMGdC6HKdLsPDABL9aXPDidrpmEHzJqFWSvshkbn9Hj8",
+      "name": "go-ipfs-flags",
+      "version": "0.0.1"
+    },
+    {
+      "author": "hsanjuan",
+      "hash": "QmdQTPWduSeyveSxeCAte33M592isSW5Z979g81aJphrgn",
+      "name": "go-ipfs-ds-help",
+      "version": "0.0.1"
+    },
+    {
+      "author": "hsanjuan",
+      "hash": "QmZRcGYvxdauCd7hHnMYLYqcZRaDjv24c7eUNyJojAcdBb",
+      "name": "go-ipfs-routing",
+      "version": "0.0.1"
     }
   ],
   "gxVersion": "0.10.0",
