@@ -66,44 +66,43 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 			return nil, err
 		}
 
-		header := dag.NewRawNode(headerBytes)
+		dir_path := strings.Trim(h.Name, "/")
+		elems := path.SplitList(dir_path)
+		deep := len(elems)
+		dir := root
+		dir_data := root_data_node
 
-		if h.Size == 0{
-			root_data_node.AddBlockSize(512)
-			root.AddNodeLinkClean("", header)
-			ds.Add(ctx, header)
-		}else if h.Size > 0 {
+		if h.Size > 0 {
+			deep = deep - 1
+			dir_path = path.Join(elems[:deep])
+		}
+
+		if deep > 0 {
+			dir_map, ok := dir_maps[deep]
+			if !ok {
+				dir_map = make(map[string]*protoNodeAndFSNode)
+				dir_maps[deep] = dir_map
+			}
+			dirpfs := dir_map[dir_path]
+			if dirpfs == nil {
+				dirpfs = new(protoNodeAndFSNode)
+				dirpfs.fs.Type = ufs.TFile
+				dir_maps[deep][dir_path] = dirpfs
+			}
+			dir_data = &dirpfs.fs
+			dir = &dirpfs.proto
+		}
+
+		if (h.Size > 0){
+			header := dag.NewRawNode(headerBytes)
 			spl := chunker.DefaultSplitter(tr)
 			nd, err := importer.BuildDagFromReader(ds, spl)
 			if err != nil {
 				return nil, err
 			}
-
+			file_name := elems[deep]
 			pad := (blockSize - (uint64(h.Size) % blockSize)) % blockSize
-
-			elems := path.SplitList(strings.Trim(h.Name, "/"))
-			file_name := elems[len(elems)-1]
-			dir := root
-			dir_data := root_data_node
-
-			if len(elems) > 1{
-				dir_path := path.Join(elems[:len(elems)-1])
-				dir_map, ok := dir_maps[len(elems)-1]
-				if !ok {
-					dir_map = make(map[string]*protoNodeAndFSNode)
-					dir_maps[len(elems)-1] = dir_map
-				}
-				dirpfs := dir_map[dir_path]
-				if dirpfs == nil {
-					dirpfs = new(protoNodeAndFSNode)
-					dirpfs.fs.Type = ufs.TFile
-					dirpfs.proto.NoSort = true
-					dir_maps[len(elems)-1][dir_path] = dirpfs
-				}
-				dir_data = &dirpfs.fs
-				dir = &dirpfs.proto
-			}
-
+			dir.NoSort = true
 			dir_data.AddBlockSize(512)
 			dir.AddNodeLinkClean("", header)
 			ds.Add(ctx, header)
@@ -116,6 +115,8 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 				dir.AddNodeLinkClean("", pad_node)
 				ds.Add(ctx, pad_node)
 			}
+		} else {
+			dir_data.Data = headerBytes
 		}
 	}
 
@@ -140,7 +141,6 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 			if dirpfs == nil {
 				dirpfs = new(protoNodeAndFSNode)
 				dirpfs.fs.Type = ufs.TFile
-				dirpfs.proto.NoSort = true
 				dir_maps[i-1][dir_path] = dirpfs
 			}
 			data_bytes, err := v.fs.GetBytes()

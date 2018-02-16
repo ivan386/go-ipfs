@@ -207,6 +207,7 @@ func (n *ProtoNode) Copy() ipld.Node {
 		copy(nnode.links, n.links)
 	}
 
+	nnode.NoSort = n.NoSort
 	nnode.Prefix = n.Prefix
 
 	return nnode
@@ -295,6 +296,7 @@ func (n *ProtoNode) UnmarshalJSON(b []byte) error {
 		return err
 	}
 
+	n.NoSort = true
 	n.data = s.Data
 	n.links = s.Links
 	return nil
