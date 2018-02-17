@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	mh "gx/ipfs/QmZyZDi491cCNTLfAhwcaDii2Kg4pwKRkhqQzURGDvY6ua/go-multihash"
 	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
@@ -304,6 +305,10 @@ func (n *ProtoNode) UnmarshalJSON(b []byte) error {
 
 // MarshalJSON returns a JSON representation of the node.
 func (n *ProtoNode) MarshalJSON() ([]byte, error) {
+	if n.NoSort == false {
+		sort.Stable(LinkSlice(n.links)) // keep links sorted
+	}
+
 	out := map[string]interface{}{
 		"data":  n.data,
 		"links": n.links,
