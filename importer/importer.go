@@ -40,8 +40,8 @@ func BuildDagFromFile(fpath string, ds ipld.DAGService) (ipld.Node, error) {
 // implementation (Splitters are io.Readers), using a Balanced layout.
 func BuildDagFromReader(ds ipld.DAGService, spl chunker.Splitter) (ipld.Node, error) {
 	dbp := h.DagBuilderParams{
-		Dagserv:  ds,
-		Maxlinks: h.DefaultLinksPerBlock,
+		Dagserv:   ds,
+		Maxlinks:  h.DefaultLinksPerBlock,
 		RawLeaves: true,
 	}
 

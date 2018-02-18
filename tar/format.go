@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 
 	importer "github.com/ipfs/go-ipfs/importer"
@@ -35,8 +36,8 @@ func marshalHeader(h *tar.Header) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-type protoNodeAndFSNode struct{
-	fs ufs.FSNode
+type protoNodeAndFSNode struct {
+	fs    ufs.FSNode
 	proto dag.ProtoNode
 }
 
@@ -93,7 +94,7 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 			dir = &dirpfs.proto
 		}
 
-		if (h.Size > 0){
+		if h.Size > 0 {
 			header := dag.NewRawNode(headerBytes)
 			spl := chunker.DefaultSplitter(tr)
 			nd, err := importer.BuildDagFromReader(ds, spl)
@@ -121,14 +122,17 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 	}
 
 	var max = 0
-	for k := range dir_maps{
+	for k := range dir_maps {
 		if k > max {
 			max = k
 		}
 	}
 
 	for i := max; i > 1; i-- {
-		for k, v := range dir_maps[i]{
+		dir_links := make(map[*protoNodeAndFSNode][]*ipld.Link)
+		link_size := make(map[*ipld.Link]uint64)
+		link_name := make(map[*ipld.Link]string)
+		for k, v := range dir_maps[i] {
 			elems := path.SplitList(k)
 			dir_path := path.Join(elems[:len(elems)-1])
 			dir_name := elems[len(elems)-1]
@@ -137,8 +141,8 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 				dir_map = make(map[string]*protoNodeAndFSNode)
 				dir_maps[i-1] = dir_map
 			}
-			dirpfs := dir_map[dir_path]
-			if dirpfs == nil {
+			dirpfs, ok := dir_map[dir_path]
+			if !ok {
 				dirpfs = new(protoNodeAndFSNode)
 				dirpfs.fs.Type = ufs.TFile
 				dir_maps[i-1][dir_path] = dirpfs
@@ -148,21 +152,63 @@ func ImportTar(ctx context.Context, r io.Reader, ds ipld.DAGService) (*dag.Proto
 				return nil, err
 			}
 			v.proto.SetData(data_bytes)
-			dirpfs.fs.AddBlockSize(v.fs.FileSize())
-			dirpfs.proto.AddNodeLinkClean(dir_name, &v.proto)
 			ds.Add(ctx, &v.proto)
+			link, err := ipld.MakeLink(&v.proto)
+			if err != nil {
+				return nil, err
+			}
+			if dirpfs.proto.NoSort {
+				links, ok := dir_links[dirpfs]
+				if !ok {
+					dir_links[dirpfs] = []*ipld.Link{link}
+				} else {
+					dir_links[dirpfs] = append(links, link)
+				}
+				link_size[link] = v.fs.FileSize()
+				link_name[link] = dir_name
+			} else {
+				dirpfs.fs.AddBlockSize(v.fs.FileSize())
+				dirpfs.proto.AddRawLink(dir_name, link)
+			}
+		}
+		for dirpfs, links := range dir_links {
+			sort.Stable(dag.LinkSlice(links))
+			for i := 0; i < len(links); i++ {
+				dirpfs.fs.AddBlockSize(link_size[links[i]])
+				dirpfs.proto.AddRawLink(link_name[links[i]], links[i])
+			}
 		}
 	}
 
-	for k, v := range dir_maps[1]{
+	links := make([]*ipld.Link, 0)
+	link_size := make(map[*ipld.Link]uint64)
+	link_name := make(map[*ipld.Link]string)
+
+	for dir_name, v := range dir_maps[1] {
 		data_bytes, err := v.fs.GetBytes()
 		if err != nil {
 			return nil, err
 		}
 		v.proto.SetData(data_bytes)
-		root_data_node.AddBlockSize(v.fs.FileSize())
-		root.AddNodeLinkClean(k, &v.proto)
 		ds.Add(ctx, &v.proto)
+		link, err := ipld.MakeLink(&v.proto)
+		if err != nil {
+			return nil, err
+		}
+		if root.NoSort {
+			links = append(links, link)
+			link_size[link] = v.fs.FileSize()
+			link_name[link] = dir_name
+		} else {
+			root_data_node.AddBlockSize(v.fs.FileSize())
+			root.AddRawLink(dir_name, link)
+		}
+	}
+
+	sort.Stable(dag.LinkSlice(links))
+	for i := 0; i < len(links); i++ {
+		root_data_node.AddBlockSize(link_size[links[i]])
+		root.AddRawLink(link_name[links[i]], links[i])
 	}
 
 	root_data_node.AddBlockSize(blockSize)
