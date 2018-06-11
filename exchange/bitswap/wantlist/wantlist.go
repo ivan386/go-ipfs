@@ -3,6 +3,7 @@
 package wantlist
 
 import (
+	"math/rand"
 	"sort"
 	"sync"
 
@@ -190,8 +191,11 @@ func (w *Wantlist) Contains(k *cid.Cid) (*Entry, bool) {
 
 func (w *Wantlist) Entries() []*Entry {
 	es := make([]*Entry, 0, len(w.set))
+	r := rand.Perm(len(w.set))
+	i := 0
 	for _, e := range w.set {
-		es = append(es, e)
+		es[r[i]] = e
+		i++
 	}
 	return es
 }
