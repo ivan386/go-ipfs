@@ -30,6 +30,7 @@ message Message {
   optional uint64 version = 4;       // bitswap version in first Message (value 1 = bitswap 1.2.0)
   repeated NextBlock haveBlocks = 5; // signal from seed that it ready to send this blocks from peer wantlist (bitswap 1.2.0)
   optional NextBlock sendBlock = 6;  // signal seed to start send this block part (bitswap 1.2.0)
+  repeated NextBlock lostBlocks = 7; // blocks that was sended in haveBlocks but now not avaliable (bitswap 1.2.0)
   
   optional Wantlist wantlist = 1;
   repeated bytes blocks = 2;        // used to send Blocks in bitswap 1.0.0
