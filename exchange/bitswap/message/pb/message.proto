@@ -17,8 +17,12 @@ message Message {
   message NextBlock {                // (bitswap 1.2.0)
     required bytes cid = 1;          // block CID
     optional uint64 blockSize = 2;   // block size (required in haveBlocks)
+    
     optional uint64 offset = 3;      // offset in block 
     optional uint64 length = 4;      // block part length (16k max as in BitTorrent)
+    
+    optional uint64 treeDepth = 5;   // deep of merkle hash tree set. 0 - root hash only (cid)
+    optional bytes treeHashSet = 6;  // merkle hash tree set
   }
 
   message Block {
