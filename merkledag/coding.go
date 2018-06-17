@@ -61,8 +61,12 @@ func (n *ProtoNode) getPBNode() *pb.PBNode {
 	sort.Stable(LinkSlice(n.links)) // keep links sorted
 	for i, l := range n.links {
 		pbn.Links[i] = &pb.PBLink{}
-		pbn.Links[i].Name = &l.Name
-		pbn.Links[i].Tsize = &l.Size
+		if l.Name != "" {
+			pbn.Links[i].Name = &l.Name
+		}
+		if l.Size != 0 {
+			pbn.Links[i].Tsize = &l.Size
+		}
 		if l.Cid != nil {
 			pbn.Links[i].Hash = l.Cid.Bytes()
 		}
